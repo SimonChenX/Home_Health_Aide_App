@@ -1,0 +1,37 @@
+<template>
+  <view class="chart">
+    <view class="bar" v-for="(v, i) in norm" :key="i" :style="{ height: v.h + 'rpx', backgroundColor: v.c }"></view>
+    <text class="empty" v-if="norm.length == 0">暂无数据</text>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { computed } from 'vue'
+import { glucoseColor } from '@/theme.uts'
+
+const props = defineProps<{ points: Array<number> }>()
+
+type Bar = { h: number, c: string }
+
+/** 迷你柱状图：高度按当日区间归一化，颜色沿用平台血糖状态色 */
+const norm = computed<Array<Bar>>(() => {
+  const pts = props.points
+  if (pts.length == 0) return [] as Array<Bar>
+  let mn = pts[0]
+  let mx = pts[0]
+  pts.forEach((v) => { if (v < mn) mn = v; if (v > mx) mx = v })
+  const span = mx - mn < 1 ? 1 : mx - mn
+  const out: Array<Bar> = []
+  pts.forEach((v) => {
+    const h = 20 + Math.round((v - mn) / span * 120)
+    out.push({ h: h, c: glucoseColor(v) } as Bar)
+  })
+  return out
+})
+</script>
+
+<style>
+.chart { flex-direction: row; align-items: flex-end; height: 150rpx; margin-top: 24rpx; }
+.bar { flex: 1; margin-right: 4rpx; border-radius: 4rpx; }
+.empty { font-size: 24rpx; color: #8c9aab; }
+</style>

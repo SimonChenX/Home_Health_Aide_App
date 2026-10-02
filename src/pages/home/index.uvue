@@ -1,0 +1,200 @@
+<template>
+  <view class="page">
+    <!-- 当前血糖：本地插值得到的矫正值 + 精度标注 -->
+    <view class="hero">
+      <text class="heroLabel">当前血糖（{{ curveReady ? '本地实时换算' : '暂无曲线' }}）</text>
+      <view class="heroRow">
+        <text class="heroVal" :style="{ color: heroColor }">{{ currentText }}</text>
+        <text class="heroUnit">mmol/L</text>
+      </view>
+      <view class="heroMeta">
+        <text class="pill" :style="{ backgroundColor: heroColor }">{{ currentLabel }}</text>
+        <text class="metaTxt">{{ updatedAt }}</text>
+      </view>
+      <text class="band" v-if="curveReady">本地估算 ± {{ bandText }} mmol/L · 已按平台校准曲线（v{{ curveVersion }}）换算</text>
+    </view>
+
+    <!-- 设备连接 -->
+    <view class="card">
+      <view class="row">
+        <text class="cardTitle">发射器</text>
+        <text class="status" :style="{ color: bleOk ? '#10b981' : '#8c9aab' }">{{ bleText }}</text>
+      </view>
+      <view class="btnRow">
+        <button class="btn small" @click="doScan">扫描设备</button>
+        <button class="btn small ghost" @click="doSync">立即同步({{ pendingCount }})</button>
+      </view>
+      <text class="hint" v-if="!bleOk">发射器 BLE 协议待平台方提供，当前仅打通链路（详见 docs/ble-protocol.md）</text>
+    </view>
+
+    <!-- 今日概览 + 迷你趋势 -->
+    <view class="card">
+      <text class="cardTitle">今日概览</text>
+      <view class="stats">
+        <view class="stat"><text class="sv">{{ avgText }}</text><text class="sl">平均</text></view>
+        <view class="stat"><text class="sv">{{ hiText }}</text><text class="sl">最高</text></view>
+        <view class="stat"><text class="sv">{{ loText }}</text><text class="sl">最低</text></view>
+        <view class="stat"><text class="sv">{{ inRateText }}</text><text class="sl">达标率</text></view>
+      </view>
+      <BarChart :points="bars" />
+    </view>
+
+    <view class="card" v-if="!platformOk">
+      <text class="hint">未连上平台接口（{{ errText }}）。下拉可重试。</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref, computed, onMounted } from 'vue'
+import { onPullDownRefresh } from '@dcloudio/uni-app'
+import BarChart from '@/components/BarChart.uvue'
+import { apiLatest } from '@/api/index.uts'
+import { loadCurve, toCalibrated, uncertaintyX10 } from '@/core/cal-curve.uts'
+import type { CalCurve } from '@/core/cal-curve.uts'
+import { fmtMmol, fmtTime, glucoseColor, glucoseLabel } from '@/theme.uts'
+import { getCurrentProbeId, setCurrentProbeId, cachedReadings, pendingRows } from '@/core/store.uts'
+import { flushPending } from '@/core/sync.uts'
+import { openAdapter, scan, connect, subscribeLive } from '@/device/ble.uts'
+
+const currentX10 = ref(0)
+const updatedAt = ref('--')
+const curveReady = ref(false)
+const curveVersion = ref('')
+const bandText = ref('0.0')
+const bleOk = ref(false)
+const bleText = ref('未连接')
+const platformOk = ref(true)
+const errText = ref('')
+const avgText = ref('--')
+const hiText = ref('--')
+const loText = ref('--')
+const inRateText = ref('--')
+const pendingCount = ref(0)
+const bars = ref<Array<number>>([])
+let curve: CalCurve | null = null
+
+const currentText = computed<string>(() => fmtMmol(currentX10.value))
+const heroColor = computed<string>(() => glucoseColor(currentX10.value / 10))
+const currentLabel = computed<string>(() => glucoseLabel(currentX10.value / 10))
+
+/** 校准曲线：一天一拉（loadCurve 内部判 TTL），是「实时显示矫正值」的前提 */
+function ensureCurve(probeId: number): Promise<void> {
+  return loadCurve(probeId, false).then((c) => {
+    curve = c
+    if (c != null) {
+      curveReady.value = true
+      curveVersion.value = c.version
+      bandText.value = (Math.round(uncertaintyX10(c)) / 10).toFixed(1)
+    }
+  })
+}
+
+/** 平台数据：最新值 + 今日概览（同时把平台回放值作为「对齐基准」） */
+function loadPlatform() {
+  apiLatest().then((r) => {
+    pendingCount.value = pendingRows().length
+    if (r.code != 0 || r.data == null) {
+      platformOk.value = false
+      errText.value = r.message == '' ? '接口不可用' : r.message
+      // 平台不可用时用本地缓存兜底（省电/离线可用）
+      const list = cachedReadings()
+      if (list.length > 0) {
+        const last = list[list.length - 1]
+        currentX10.value = last.cal
+        updatedAt.value = fmtTime(last.ts) + '（本地缓存）'
+      }
+      return
+    }
+    platformOk.value = true
+    const d = r.data as UTSJSONObject
+    const latest = d['latest'] as UTSJSONObject | null
+    if (latest != null) {
+      const cal = (latest['cal_x10'] as number | null) ?? 0
+      const pid = (latest['probe_id'] as number | null) ?? 0
+      if (pid > 0) {
+        setCurrentProbeId(pid)
+        ensureCurve(pid)
+      }
+      if (cal > 0) {
+        currentX10.value = cal
+        const ts = (latest['ts'] as number | null) ?? 0
+        updatedAt.value = fmtTime(ts)
+      }
+    }
+    const today = d['today'] as UTSJSONObject | null
+    if (today != null) {
+      avgText.value = fmtMmol((today['avg_x10'] as number | null) ?? 0)
+      hiText.value = fmtMmol((today['max_x10'] as number | null) ?? 0)
+      loText.value = fmtMmol((today['min_x10'] as number | null) ?? 0)
+      const rate = (today['in_range_rate'] as number | null) ?? -1
+      if (rate >= 0) inRateText.value = (Math.round(rate * 1000) / 10).toFixed(1) + '%'
+    }
+    const series = d['recent'] as Array<UTSJSONObject> | null
+    if (series != null) {
+      const arr: Array<number> = []
+      series.forEach((p) => { arr.push(((p['cal_x10'] as number | null) ?? 0) / 10) })
+      bars.value = arr
+    }
+  })
+}
+
+function doScan() {
+  openAdapter().then((ok) => {
+    if (!ok) { bleText.value = '蓝牙未开启'; return }
+    bleText.value = '扫描中…'
+    scan(8000).then((ids) => {
+      if (ids.length == 0) { bleText.value = '未发现发射器'; return }
+      connect(ids[0]).then((c) => {
+        bleOk.value = c
+        bleText.value = c ? '已连接' : '连接失败'
+        if (c) {
+          subscribeLive((v) => {
+            // 实时：BLE 原始值 → 本地插值 → 矫正值（0 次网络请求）
+            currentX10.value = v.cal > 0 ? v.cal : currentX10.value
+            updatedAt.value = fmtTime(v.ts) + '（本地）'
+            pendingCount.value = pendingRows().length
+          })
+        }
+      })
+    })
+  })
+}
+
+function doSync() {
+  flushPending(true).then((n) => {
+    pendingCount.value = pendingRows().length
+    uni.showToast({ title: n > 0 ? '已上报 ' + n + ' 条' : '暂无可上报数据', icon: 'none' } as ShowToastOptions)
+    loadPlatform()
+  })
+}
+
+onMounted(() => { loadPlatform() })
+onPullDownRefresh(() => { loadPlatform(); flushPending(true).then((_n) => { uni.stopPullDownRefresh() }) })
+</script>
+
+<style>
+.page { flex: 1; background-color: #f6f8fb; padding: 24rpx; }
+.hero { background-color: #ffffff; border-radius: 24rpx; padding: 40rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.heroLabel { font-size: 26rpx; color: #8c9aab; }
+.heroRow { flex-direction: row; align-items: flex-end; margin-top: 16rpx; }
+.heroVal { font-size: 96rpx; font-weight: bold; }
+.heroUnit { font-size: 28rpx; color: #5a6b7b; margin-left: 12rpx; margin-bottom: 16rpx; }
+.heroMeta { flex-direction: row; align-items: center; margin-top: 20rpx; }
+.pill { color: #ffffff; font-size: 24rpx; padding: 6rpx 20rpx; border-radius: 999rpx; }
+.metaTxt { font-size: 24rpx; color: #8c9aab; margin-left: 16rpx; }
+.band { font-size: 22rpx; color: #8c9aab; margin-top: 16rpx; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 28rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.row { flex-direction: row; justify-content: space-between; align-items: center; }
+.cardTitle { font-size: 30rpx; color: #1f2d3d; font-weight: bold; }
+.status { font-size: 26rpx; }
+.btnRow { flex-direction: row; margin-top: 24rpx; }
+.btn { flex: 1; height: 76rpx; line-height: 76rpx; font-size: 26rpx; background-color: #0e9f9a; color: #ffffff; border-radius: 14rpx; margin-right: 16rpx; }
+.btn.ghost { background-color: #e6f6f5; color: #0b7f7b; }
+.btn.small { margin-right: 16rpx; }
+.hint { font-size: 22rpx; color: #8c9aab; margin-top: 16rpx; }
+.stats { flex-direction: row; justify-content: space-between; margin-top: 24rpx; }
+.stat { align-items: center; }
+.sv { font-size: 32rpx; color: #1f2d3d; }
+.sl { font-size: 22rpx; color: #8c9aab; margin-top: 8rpx; }
+</style>

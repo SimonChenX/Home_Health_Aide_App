@@ -1,0 +1,86 @@
+/**
+ * 同步策略（省电 / 减少与 API 的网络交互 —— 老板需求 2.4 的另一半）
+ *
+ * 原则：**不做定时轮询**。只有三种时机联网：
+ *   1) APP 启动 / 回前台：若曲线过期（>24h）或探头变更 → 拉 1 次曲线；
+ *   2) WiFi 下且待上报读数 ≥ 20 条 → 批量回传（一次 ≤500 条）；
+ *   3) 用户手动下拉刷新 / 点「立即同步」。
+ * 移动网络下默认不回传（省流量），仅在待上报队列 ≥500 条时兜底提交，避免端上数据积压丢失。
+ */
+import { apiBackfill } from '@/api/index.uts'
+import { loadCurve } from './cal-curve.uts'
+import {
+  getCurrentProbeId, pendingRows, clearPending, setPending, isLogged
+} from './store.uts'
+
+const BATCH_MAX = 500
+const WIFI_BATCH_MIN = 20
+const CELL_BATCH_MIN = 500
+
+let syncing = false
+let timerId: number = -1
+
+/** 启动/回前台同步：轻量、幂等 */
+export async function syncOnLaunch() {
+  if (!isLogged()) return
+  const probeId = getCurrentProbeId()
+  if (probeId > 0) {
+    await loadCurve(probeId, false) // TTL 内部判断，未过期直接返回缓存，不产生请求
+  }
+  await flushPending(false)
+}
+
+/** 停止后台循环（App 进入后台时调用；本实现不常驻定时器，留钩子便于后续扩展） */
+export function stopSyncLoop() {
+  if (timerId >= 0) {
+    clearTimeout(timerId)
+    timerId = -1
+  }
+}
+
+function isWifi(): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    uni.getNetworkType({
+      success: (res) => resolve(res.networkType == 'wifi'),
+      fail: (_e) => resolve(false)
+    } as GetNetworkTypeOptions)
+  })
+}
+
+/** 批量回传本地缓存的原始读数；manual=true 表示用户手动触发（不看网络类型） */
+export async function flushPending(manual: boolean): Promise<number> {
+  if (syncing || !isLogged()) return 0
+  const probeId = getCurrentProbeId()
+  if (probeId <= 0) return 0
+  const list = pendingRows()
+  if (list.length == 0) return 0
+  const wifi = manual ? true : await isWifi()
+  const minNeed = wifi ? WIFI_BATCH_MIN : CELL_BATCH_MIN
+  if (list.length < minNeed) return 0
+
+  syncing = true
+  let sent = 0
+  try {
+    let idx = 0
+    while (idx < list.length) {
+      const chunk = list.slice(idx, idx + BATCH_MAX)
+      const rows: Array<UTSJSONObject> = []
+      chunk.forEach((r) => {
+        rows.push({ seq: r.seq, ts: r.ts, raw_x10: r.raw_x10, temp_x10: r.temp_x10 } as UTSJSONObject)
+      })
+      const resp = await apiBackfill(probeId, rows)
+      if (resp.code != 0) break
+      sent += chunk.length
+      idx += BATCH_MAX
+    }
+  } finally {
+    syncing = false
+  }
+  if (sent > 0) {
+    // 只清掉已成功上报的部分
+    const rest = list.slice(sent)
+    if (rest.length == 0) clearPending()
+    else setPending(rest)
+  }
+  return sent
+}

@@ -1,0 +1,39 @@
+{
+  "name": "家庭健康助理",
+  "appid": "__UNI_APPID__",
+  "description": "家庭健康助理平台移动端：读发射器血糖、本地实时换算、家庭共享",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3,
+    "distribute": {
+      "android": {
+        "packagename": "com.jiayouexp.hha",
+        "minSdkVersion": 24,
+        "targetSdkVersion": 34,
+        "permissions": [
+          "<uses-permission android:name=\"android.permission.BLUETOOTH_SCAN\"/>",
+          "<uses-permission android:name=\"android.permission.BLUETOOTH_CONNECT\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_FINE_LOCATION\"/>",
+          "<uses-permission android:name=\"android.permission.INTERNET\"/>",
+          "<uses-permission android:name=\"android.permission.ACCESS_NETWORK_STATE\"/>"
+        ]
+      },
+      "ios": {
+        "dSYMs": false,
+        "privacyDescription": {
+          "NSBluetoothAlwaysUsageDescription": "用于连接血糖发射器，读取血糖数据",
+          "NSBluetoothPeripheralUsageDescription": "用于连接血糖发射器，读取血糖数据"
+        }
+      },
+      "sdkConfigs": {}
+    }
+  },
+  "quickapp": {},
+  "mp-weixin": { "appid": "", "setting": { "urlCheck": false }, "usingComponents": true },
+  "uniStatistics": { "enable": false },
+  "vueVersion": "3"
+}

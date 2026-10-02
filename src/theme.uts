@@ -1,0 +1,70 @@
+/**
+ * 设计令牌 —— 与平台前端 Front/src/styles/index.scss 的 :root 变量保持一致，
+ * 保证「APP 的 UI UX 设计风格与平台一致」（老板需求 2.5）。
+ * 改动规则：平台改了令牌，这里同步改；不要在页面里写死颜色。
+ */
+export const C = {
+  primary: '#0e9f9a',        // 平台主色
+  primaryDark: '#0b7f7b',
+  primarySoft: '#e6f6f5',
+  bg: '#f6f8fb',
+  card: '#ffffff',
+  text: '#1f2d3d',
+  textSub: '#5a6b7b',
+  textMute: '#8c9aab',
+  border: '#e6ebf1',
+  success: '#10b981',
+  warn: '#f59e0b',
+  danger: '#ef4444',
+  low: '#3b82f6'
+} as const
+
+export const R = {
+  card: 12,      // 圆角（rpx 由调用处决定）
+  pill: 999,
+  input: 10
+} as const
+
+export const FONT = {
+  h1: 40, h2: 34, body: 28, sub: 26, tiny: 22
+} as const
+
+/** 血糖状态：与平台看板同一口径（mmol/L） */
+export function glucoseStatus(mmol: number): string {
+  if (mmol <= 0) return 'unknown'
+  if (mmol < 3.9) return 'low'
+  if (mmol <= 10.0) return 'in'
+  if (mmol <= 13.9) return 'high'
+  return 'veryhigh'
+}
+
+export function glucoseLabel(mmol: number): string {
+  const s = glucoseStatus(mmol)
+  if (s == 'low') return '偏低'
+  if (s == 'in') return '达标'
+  if (s == 'high') return '偏高'
+  if (s == 'veryhigh') return '过高'
+  return '—'
+}
+
+export function glucoseColor(mmol: number): string {
+  const s = glucoseStatus(mmol)
+  if (s == 'low') return C.low
+  if (s == 'in') return C.success
+  if (s == 'high') return C.warn
+  if (s == 'veryhigh') return C.danger
+  return C.textMute
+}
+
+/** 与平台一致的数值格式化：cal_x10（mmol/L ×10）→ 显示串 */
+export function fmtMmol(x10: number): string {
+  if (x10 <= 0) return '--'
+  return (Math.round(x10 / 10 * 10) / 10).toFixed(1)
+}
+
+export function fmtTime(tsSec: number): string {
+  if (tsSec <= 0) return '--'
+  const d = new Date(tsSec * 1000)
+  const p = (n: number): string => n < 10 ? '0' + n : '' + n
+  return p(d.getHours()) + ':' + p(d.getMinutes())
+}

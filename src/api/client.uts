@@ -1,0 +1,66 @@
+/**
+ * 接口客户端 —— 与平台同一套 REST 接口、同一套 Bearer token。
+ * 省电要点：默认短超时 + 失败不重试（由调用方决定）；不做轮询。
+ */
+import { getToken, clearToken } from '@/core/store.uts'
+
+/** 平台地址：内网/生产可切换（生产走 https，受 EdgeOne 缓存影响的是静态页，接口不受影响） */
+export const BASE_URL: string = 'https://sisensing.glemon.cn/api'
+// 内网调试用：export const BASE_URL: string = 'https://sisensing.internal.jiayouexp.com/api'
+
+export type ApiResp = {
+  code: number
+  message: string
+  data: any | null
+}
+
+export type ReqOpts = {
+  method?: string
+  body?: any | null
+  auth?: boolean
+  timeout?: number
+}
+
+/** 统一请求：返回 { code, message, data }；网络异常返回 code=-1 */
+export function request(path: string, opts: ReqOpts = {}): Promise<ApiResp> {
+  return new Promise<ApiResp>((resolve) => {
+    const header: UTSJSONObject = { 'Content-Type': 'application/json' }
+    if (opts.auth != false) {
+      const t = getToken()
+      if (t != '') header['Authorization'] = 'Bearer ' + t
+    }
+    uni.request({
+      url: BASE_URL + path,
+      method: (opts.method ?? 'GET') as any,
+      data: opts.body ?? null,
+      header: header,
+      timeout: opts.timeout ?? 12000,
+      success: (res) => {
+        const body = res.data as UTSJSONObject | null
+        if (body == null) {
+          resolve({ code: -1, message: '空响应', data: null } as ApiResp)
+          return
+        }
+        const code = (body['code'] as number | null) ?? -1
+        // token 失效：清登录态，交由页面跳登录
+        if (code == 40100 || code == 40101) clearToken()
+        resolve({
+          code: code,
+          message: (body['message'] as string | null) ?? '',
+          data: body['data']
+        } as ApiResp)
+      },
+      fail: (_e) => {
+        resolve({ code: -1, message: '网络异常', data: null } as ApiResp)
+      }
+    } as RequestOptions)
+  })
+}
+
+export function get(path: string, auth: boolean = true): Promise<ApiResp> {
+  return request(path, { method: 'GET', auth: auth } as ReqOpts)
+}
+
+export function post(path: string, body: any, auth: boolean = true): Promise<ApiResp> {
+  return request(path, { method: 'POST', body: body, auth: auth } as ReqOpts)
+}

@@ -1,0 +1,126 @@
+<template>
+  <view class="page">
+    <view class="card">
+      <view class="row">
+        <view class="avatar"><text class="av">家</text></view>
+        <view class="col">
+          <text class="name">{{ nickname }}</text>
+          <text class="mail">{{ email }}</text>
+        </view>
+      </view>
+    </view>
+
+    <view class="card">
+      <text class="cardTitle">只读账号</text>
+      <view class="grid" v-if="readonly != null">
+        <view class="cell"><text class="cv">{{ roGlucose }}</text><text class="cl">最近血糖</text></view>
+        <view class="cell"><text class="cv">{{ roReadings }}</text><text class="cl">可见读数</text></view>
+        <view class="cell"><text class="cv">{{ roDevices }}</text><text class="cl">设备台数</text></view>
+      </view>
+      <text class="hint" v-else>当前账号无只读共享数据</text>
+    </view>
+
+    <view class="card">
+      <text class="cardTitle">数据同步</text>
+      <view class="kv"><text class="k">待上报读数</text><text class="v">{{ pending }} 条</text></view>
+      <view class="kv"><text class="k">校准曲线</text><text class="v">{{ curveInfo }}</text></view>
+      <button class="btn" @click="doSync">立即同步</button>
+      <text class="hint">仅在 WiFi/手动时批量上报，避免逐条请求耗电（需求 2.4）</text>
+    </view>
+
+    <view class="card">
+      <view class="link" @click="goFamily"><text class="lk">家庭管理</text><text class="arrow">›</text></view>
+      <view class="link" @click="goDevices"><text class="lk">我的设备</text><text class="arrow">›</text></view>
+      <view class="link" @click="showAbout = !showAbout"><text class="lk">关于本 APP</text><text class="arrow">›</text></view>
+      <text class="hint" v-if="showAbout">v{{ version }} · 与平台同源；矫正算法在 API 端，本端只做曲线插值展示。</text>
+    </view>
+
+    <button class="btn danger" @click="logout">退出登录</button>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref, onMounted } from 'vue'
+import { apiProfile } from '@/api/index.uts'
+import { getCurrentProbeId, getCurve, pendingRows, getUser, clearToken } from '@/core/store.uts'
+import { flushPending } from '@/core/sync.uts'
+import { fmtMmol } from '@/theme.uts'
+
+const nickname = ref('用户')
+const email = ref('')
+const pending = ref(0)
+const curveInfo = ref('未加载')
+const version = ref('0.1.0')
+const showAbout = ref(false)
+const readonly = ref<UTSJSONObject | null>(null)
+const roGlucose = ref('--')
+const roReadings = ref('--')
+const roDevices = ref('--')
+
+onMounted(() => {
+  pending.value = pendingRows().length
+  const u = getUser()
+  if (u != null) {
+    nickname.value = (u['nickname'] as string | null) ?? '用户'
+    email.value = (u['email'] as string | null) ?? ''
+  }
+  const pid = getCurrentProbeId()
+  const c = pid > 0 ? getCurve(pid) : null
+  if (c != null) curveInfo.value = 'v' + c.version + '（' + c.points.length + ' 点）'
+  apiProfile().then((r) => {
+    if (r.code != 0 || r.data == null) return
+    const d = r.data as UTSJSONObject
+    const u2 = d['user'] as UTSJSONObject | null
+    if (u2 != null) {
+      nickname.value = (u2['nickname'] as string | null) ?? nickname.value
+      email.value = (u2['email'] as string | null) ?? email.value
+    }
+    // 只读（家庭共享）视图：平台 profile 里给到的权限集合
+    const ro = d['readonly'] as UTSJSONObject | null
+    if (ro != null) {
+      readonly.value = ro
+      roGlucose.value = fmtMmol((ro['last_cal_x10'] as number | null) ?? 0)
+      roReadings.value = ((ro['readings'] as number | null) ?? 0).toString()
+      roDevices.value = ((ro['devices'] as number | null) ?? 0).toString()
+    }
+  })
+})
+
+function doSync() {
+  flushPending(true).then((n) => {
+    pending.value = pendingRows().length
+    uni.showToast({ title: n > 0 ? '已上报 ' + n + ' 条' : '暂无待上报数据', icon: 'none' } as ShowToastOptions)
+  })
+}
+function goFamily() { uni.navigateTo({ url: '/pages/family/index' } as NavigateToOptions) }
+function goDevices() { uni.navigateTo({ url: '/pages/mine/devices' } as NavigateToOptions) }
+function logout() {
+  clearToken()
+  uni.reLaunch({ url: '/pages/login/index' } as ReLaunchOptions)
+}
+</script>
+
+<style>
+.page { flex: 1; background-color: #f6f8fb; padding: 24rpx; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 28rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.row { flex-direction: row; align-items: center; }
+.avatar { width: 96rpx; height: 96rpx; border-radius: 999rpx; background-color: #e6f6f5; align-items: center; justify-content: center; }
+.av { color: #0e9f9a; font-size: 40rpx; font-weight: bold; }
+.col { margin-left: 24rpx; }
+.name { font-size: 32rpx; font-weight: bold; color: #1f2d3d; }
+.mail { font-size: 24rpx; color: #8c9aab; margin-top: 8rpx; }
+.cardTitle { font-size: 30rpx; font-weight: bold; color: #1f2d3d; }
+.grid { flex-direction: row; margin-top: 24rpx; }
+.cell { flex: 1; align-items: center; }
+.cv { font-size: 32rpx; color: #0e9f9a; font-weight: bold; }
+.cl { font-size: 22rpx; color: #8c9aab; margin-top: 8rpx; }
+.kv { flex-direction: row; justify-content: space-between; padding: 16rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.k { font-size: 26rpx; color: #5a6b7b; }
+.v { font-size: 26rpx; color: #1f2d3d; }
+.btn { height: 80rpx; line-height: 80rpx; background-color: #0e9f9a; color: #ffffff; border-radius: 14rpx; font-size: 28rpx; margin-top: 24rpx; }
+.btn.danger { background-color: #ffffff; color: #ef4444; border: 1rpx solid #f5c2c2; }
+.link { flex-direction: row; justify-content: space-between; align-items: center; padding: 24rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.lk { font-size: 28rpx; color: #1f2d3d; }
+.arrow { font-size: 32rpx; color: #c3ccd6; }
+.hint { font-size: 22rpx; color: #8c9aab; margin-top: 16rpx; }
+</style>

@@ -1,0 +1,11 @@
+node_modules/
+unpackage/
+.hbuilderx/
+*.apk
+*.ipa
+*.keystore
+*.jks
+*.mobileprovision
+*.p12
+.env
+.DS_Store

@@ -1,0 +1,193 @@
+<template>
+  <view class="page">
+    <view class="card" v-if="hasFamily">
+      <view class="row">
+        <text class="cardTitle">{{ familyName }}</text>
+        <text class="role">{{ myRoleText }}</text>
+      </view>
+      <view class="kv"><text class="k">邀请码</text><text class="v code">{{ inviteCode }}</text></view>
+      <view class="btnRow">
+        <button class="btn small" @click="genInvite">生成/刷新邀请码</button>
+        <button class="btn small ghost" @click="copyCode">复制</button>
+      </view>
+      <text class="hint">邀请码由家庭管理员生成，配偶用同一邀请码加入后即为管理员（需求 3.1）</text>
+    </view>
+
+    <view class="card" v-if="!hasFamily">
+      <text class="cardTitle">还没有家庭</text>
+      <input class="inp" v-model="newName" placeholder="家庭名称（如：陈家）" />
+      <button class="btn" @click="create">创建家庭</button>
+      <text class="or">或</text>
+      <input class="inp" v-model="joinCode" placeholder="输入邀请码加入" />
+      <button class="btn ghost" @click="join">加入家庭</button>
+    </view>
+
+    <view class="card" v-if="hasFamily">
+      <text class="cardTitle">家庭成员（{{ members.length }}）</text>
+      <view class="item" v-for="(m, i) in members" :key="i" @click="openMember(m)">
+        <view class="col">
+          <text class="mn">{{ m.name }}<text class="rel" v-if="m.relation != ''"> · {{ m.relation }}</text></text>
+          <text class="ms">{{ m.sub }}</text>
+        </view>
+        <text class="mtag" :style="{ color: m.color }">{{ m.tag }}</text>
+      </view>
+      <text class="empty" v-if="members.length == 0">暂无成员</text>
+    </view>
+
+    <!-- 成员详情：管理员可改档案与可见性（不能改血糖读数/医疗记录内容） -->
+    <view class="mask" v-if="cur != null" @click="cur = null">
+      <view class="sheet" @click.stop>
+        <text class="sheetTitle">成员：{{ cur == null ? '' : cur.name }}</text>
+        <view class="kv"><text class="k">家庭角色</text><text class="v">{{ curRoleText() }}</text></view>
+        <view class="kv"><text class="k">可查看数据</text><text class="v">{{ curOn('can_view') ? '是' : '否' }}</text></view>
+        <view class="kv"><text class="k">可修改档案</text><text class="v">{{ curOn('can_edit') ? '是' : '否' }}</text></view>
+        <view class="btnRow">
+          <button class="btn small" @click="toggle('can_view')">切换可见</button>
+          <button class="btn small" @click="toggle('can_edit')">切换可改档案</button>
+        </view>
+        <view class="btnRow">
+          <button class="btn small" @click="makeAdmin" v-if="cur != null && cur.role != 'admin'">设为家庭管理员</button>
+          <button class="btn small danger" @click="remove" v-if="members.length > 1">移出家庭</button>
+        </view>
+        <text class="hint">管理员的权限边界：可查看/修改其他成员档案与可见性；不能修改血糖读数与医疗记录内容。</text>
+      </view>
+    </view>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref, onMounted } from 'vue'
+import { apiFamiliesMy, apiFamilyCreate, apiFamilyInvite, apiFamilyJoin,
+         apiFamilyMemberUpdate, apiFamilyMemberRemove } from '@/api/index.uts'
+import { fmtMmol } from '@/theme.uts'
+
+type Member = { uid: number, name: string, relation: string, sub: string, tag: string, color: string, role: string, canView: boolean, canEdit: boolean }
+
+const hasFamily = ref(false)
+const familyName = ref('')
+const inviteCode = ref('—')
+const myRoleText = ref('')
+const members = ref<Array<Member>>([])
+const newName = ref('')
+const joinCode = ref('')
+const cur = ref<Member | null>(null)
+
+/** 当前选中成员的角色文案（模板用） */
+function curRoleText(): string {
+  const m = cur.value
+  if (m == null) return ''
+  return m.role == 'admin' ? '家庭管理员' : '成员'
+}
+
+function load() {
+  apiFamiliesMy().then((r) => {
+    if (r.code != 0 || r.data == null) return
+    const d = r.data as UTSJSONObject
+    const fam = d['family'] as UTSJSONObject | null
+    if (fam == null) { hasFamily.value = false; return }
+    hasFamily.value = true
+    familyName.value = (fam['name'] as string | null) ?? '我的家庭'
+    myRoleText.value = ((fam['my_role'] as string | null) ?? '') == 'admin' ? '家庭管理员' : '成员'
+    inviteCode.value = (fam['invite_code'] as string | null) ?? '—'
+    const list = d['members'] as Array<UTSJSONObject> | null
+    const out: Array<Member> = []
+    if (list != null) {
+      list.forEach((m) => {
+        const role = (m['role'] as string | null) ?? 'member'
+        const canView = ((m['can_view'] as number | null) ?? 0) == 1
+        const canEdit = ((m['can_edit'] as number | null) ?? 0) == 1
+        const last = (m['last_cal_x10'] as number | null) ?? 0
+        out.push({
+          uid: (m['user_id'] as number | null) ?? 0,
+          name: (m['nickname'] as string | null) ?? '成员',
+          relation: (m['relation'] as string | null) ?? '',
+          sub: '最近血糖 ' + fmtMmol(last) + ' mmol/L',
+          tag: role == 'admin' ? '管理员' : '成员',
+          color: role == 'admin' ? '#0e9f9a' : '#8c9aab',
+          role: role, canView: canView, canEdit: canEdit
+        } as Member)
+      })
+    }
+    members.value = out
+  })
+}
+
+function create() {
+  if (newName.value == '') return
+  apiFamilyCreate(newName.value).then((_r) => load())
+}
+function join() {
+  if (joinCode.value == '') return
+  apiFamilyJoin(joinCode.value).then((r) => {
+    if (r.code != 0) uni.showToast({ title: r.message, icon: 'none' } as ShowToastOptions)
+    else load()
+  })
+}
+function genInvite() {
+  apiFamilyInvite().then((r) => {
+    if (r.code == 0 && r.data != null) {
+      const d = r.data as UTSJSONObject
+      inviteCode.value = (d['invite_code'] as string | null) ?? inviteCode.value
+    }
+    load()
+  })
+}
+function copyCode() {
+  uni.setClipboardData({ data: inviteCode.value } as SetClipboardDataOptions)
+}
+function openMember(m: Member) { cur.value = m }
+function curOn(k: string): boolean {
+  const m = cur.value
+  if (m == null) return false
+  return k == 'can_view' ? m.canView : m.canEdit
+}
+function toggle(k: string) {
+  const m = cur.value
+  if (m == null) return
+  const body: UTSJSONObject = {}
+  const next = k == 'can_view' ? !m.canView : !m.canEdit
+  body[k] = next ? 1 : 0
+  apiFamilyMemberUpdate(m.uid, body).then((_r) => { cur.value = null; load() })
+}
+function makeAdmin() {
+  const m = cur.value
+  if (m == null) return
+  apiFamilyMemberUpdate(m.uid, { role: 'admin' } as UTSJSONObject).then((_r) => { cur.value = null; load() })
+}
+function remove() {
+  const m = cur.value
+  if (m == null) return
+  apiFamilyMemberRemove(m.uid).then((_r) => { cur.value = null; load() })
+}
+
+onMounted(() => load())
+</script>
+
+<style>
+.page { flex: 1; background-color: #f6f8fb; padding: 24rpx; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 28rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.row { flex-direction: row; justify-content: space-between; align-items: center; }
+.cardTitle { font-size: 30rpx; font-weight: bold; color: #1f2d3d; }
+.role { font-size: 24rpx; color: #0e9f9a; background-color: #e6f6f5; padding: 6rpx 18rpx; border-radius: 999rpx; }
+.kv { flex-direction: row; justify-content: space-between; padding: 18rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.k { font-size: 26rpx; color: #5a6b7b; }
+.v { font-size: 26rpx; color: #1f2d3d; }
+.code { font-size: 32rpx; color: #0e9f9a; font-weight: bold; letter-spacing: 4rpx; }
+.inp { height: 84rpx; border: 1rpx solid #e6ebf1; border-radius: 16rpx; padding: 0 24rpx; margin-top: 20rpx; font-size: 28rpx; background-color: #fbfcfe; }
+.btn { height: 80rpx; line-height: 80rpx; background-color: #0e9f9a; color: #ffffff; border-radius: 14rpx; font-size: 28rpx; margin-top: 20rpx; }
+.btn.ghost { background-color: #e6f6f5; color: #0b7f7b; }
+.btn.danger { background-color: #ffffff; color: #ef4444; border: 1rpx solid #f5c2c2; }
+.btnRow { flex-direction: row; margin-top: 8rpx; }
+.btn.small { flex: 1; margin-right: 16rpx; font-size: 26rpx; }
+.or { font-size: 24rpx; color: #8c9aab; text-align: center; margin-top: 20rpx; }
+.item { flex-direction: row; justify-content: space-between; align-items: center; padding: 24rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.mn { font-size: 28rpx; color: #1f2d3d; }
+.rel { font-size: 24rpx; color: #8c9aab; }
+.ms { font-size: 22rpx; color: #8c9aab; margin-top: 8rpx; }
+.mtag { font-size: 24rpx; }
+.empty { font-size: 26rpx; color: #8c9aab; text-align: center; padding: 30rpx 0; }
+.hint { font-size: 22rpx; color: #8c9aab; margin-top: 20rpx; }
+.mask { position: fixed; left: 0; top: 0; right: 0; bottom: 0; background-color: rgba(0,0,0,0.35); justify-content: flex-end; }
+.sheet { background-color: #ffffff; border-top-left-radius: 28rpx; border-top-right-radius: 28rpx; padding: 36rpx 32rpx 60rpx 32rpx; }
+.sheetTitle { font-size: 30rpx; font-weight: bold; color: #1f2d3d; margin-bottom: 20rpx; }
+</style>

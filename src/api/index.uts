@@ -1,0 +1,60 @@
+/**
+ * 平台接口清单（全部为平台真实存在的端点，不放杜撰接口）
+ *  · /auth/login|profile            账号
+ *  · /dashboard/latest              首页：最新值 + 今日概览 + 最近曲线
+ *  · /readings/series|            曲线取数
+ *  · /readings/backfill           批量补录（APP 缓存的读数批量上报通道）
+ *  · /calibration/curve           【本 APP 核心】原始值→矫正值映射表（本地实时换算）
+ *  · /devices?kind=tx|probe       设备档案
+ *  · /medicals、/medicals/ocr/*   医疗记录与识别
+ *  · /families/*                  家庭管理
+ */
+import { get, post, request } from './client.uts'
+import type { ApiResp } from './client.uts'
+
+export function apiLogin(email: string, password: string): Promise<ApiResp> {
+  return post('/auth/login', { email: email, password: password } as UTSJSONObject, false)
+}
+
+export function apiProfile(): Promise<ApiResp> { return get('/auth/profile') }
+
+export function apiLatest(): Promise<ApiResp> { return get('/dashboard/latest') }
+
+export function apiSeries(probeId: number, fromTs: number, toTs: number): Promise<ApiResp> {
+  return get('/readings/series?probe_id=' + probeId + '&from=' + fromTs + '&to=' + toTs)
+}
+
+export function apiReadings(page: number, size: number): Promise<ApiResp> {
+  return get('/readings?page=' + page + '&size=' + size)
+}
+
+/** 批量上报（APP 本地缓存的原始读数） */
+export function apiBackfill(probeId: number, rows: Array<UTSJSONObject>): Promise<ApiResp> {
+  return post('/readings/backfill', {
+    probe_id: probeId, source: 'app', rows: rows
+  } as UTSJSONObject)
+}
+
+/** 【核心】校准曲线：raw → 矫正值 映射表 */
+export function apiCalCurve(probeId: number): Promise<ApiResp> {
+  return get('/calibration/curve?probe_id=' + probeId)
+}
+
+export function apiProbes(): Promise<ApiResp> { return get('/devices?kind=probe') }
+
+export function apiFamiliesMy(): Promise<ApiResp> { return get('/families/my') }
+export function apiFamilyCreate(name: string): Promise<ApiResp> {
+  return post('/families', { name: name } as UTSJSONObject)
+}
+export function apiFamilyInvite(): Promise<ApiResp> { return post('/families/invite', {} as UTSJSONObject) }
+export function apiFamilyJoin(code: string): Promise<ApiResp> {
+  return post('/families/join', { invite_code: code } as UTSJSONObject)
+}
+export function apiFamilyMembers(): Promise<ApiResp> { return get('/families/my') }
+/** 家庭成员改角色/可见性（家庭管理员可改他人档案与可见性，不能改读数/记录内容） */
+export function apiFamilyMemberUpdate(uid: number, body: UTSJSONObject): Promise<ApiResp> {
+  return request('/families/members/' + uid, { method: 'PATCH', body: body } as ReqOpts)
+}
+export function apiFamilyMemberRemove(uid: number): Promise<ApiResp> {
+  return request('/families/members/' + uid, { method: 'DELETE' } as ReqOpts)
+}

@@ -1,0 +1,23 @@
+/**
+ * 发射器 BLE 协议常量 —— ⚠ 现状：平台方尚未提供协议，本文件是**待补清单**。
+ *
+ * 已知（平台 Docs/device-protocol-v3.md）：设备**上行到 API** 的数据格式（设备经网关/手机热点上报）。
+ * 缺失（APP 直连发射器必需）：
+ *   1) 广播名称前缀 / Service UUID / 特征 UUID（写命令、读响应、通知）
+ *   2) 认证/配对方式（是否需要 connect_code 派生密钥？平台有「连接码」概念）
+ *   3) flash 历史读取命令：起始游标、单次返回条数、序号语义（与平台 readings.seq 的对应关系）
+ *   4) 实时值推送格式与频率
+ *   5) 温度是否随包上报（平台 readings.temp_x10）
+ *
+ * 拿到协议后只需替换本文件的常量 + device/ble.uts 里 parseFrame() 的实现，页面无需改动。
+ */
+export const DEV_NAME_PREFIX = 'E115'      // 占位：待确认
+export const SERVICE_UUID = '0000fff0-0000-1000-8000-00805f9b34fb'   // 占位
+export const CHAR_WRITE_UUID = '0000fff1-0000-1000-8000-00805f9b34fb' // 占位（写命令）
+export const CHAR_NOTIFY_UUID = '0000fff2-0000-1000-8000-00805f9b34fb' // 占位（通知/响应）
+
+export const CMD_READ_HISTORY = 0x01   // 占位
+export const CMD_LIVE = 0x02           // 占位
+
+export const FLASH_MAX_ROWS = 2016     // 占位：单次可读历史条数上限
+export const PROTOCOL_READY = false    // 协议补齐后改 true，ble.uts 会走真实解析而非模拟

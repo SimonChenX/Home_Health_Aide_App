@@ -1,0 +1,156 @@
+name: Build APP (uni-app x)
+
+# 老板需求 2.3：用本仓库的 workflow 打包。
+# 现状：流水线已就绪，但**仓库 Secrets 未配置**（DCloud 账号 + 签名证书），
+#      所以现在跑出来只会停在「缺少凭据」那一步 —— 配置后即可产出 APK/IPA。
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: '打包平台'
+        required: true
+        default: 'android'
+        type: choice
+        options: [android, ios, both]
+  push:
+    tags: ['v*']
+
+jobs:
+  pack-android:
+    if: ${{ github.event_name == 'push' || inputs.platform == 'android' || inputs.platform == 'both' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查凭据
+        id: creds
+        run: |
+          missing=0
+          for k in DCLOUD_USER DCLOUD_PASS ANDROID_KEYSTORE_BASE64 ANDROID_KEYSTORE_PASS ANDROID_KEY_ALIAS ANDROID_KEY_PASS; do
+            if [ -z "${!k}" ]; then echo "缺少 secret: $k"; missing=1; fi
+          done
+          echo "missing=$missing" >> $GITHUB_OUTPUT
+          if [ "$missing" = "1" ]; then
+            echo "::warning::缺少 DCloud/签名凭据，无法云打包。请在 Settings → Secrets 配置后重跑。"
+          fi
+        env:
+          DCLOUD_USER: ${{ secrets.DCLOUD_USER }}
+          DCLOUD_PASS: ${{ secrets.DCLOUD_PASS }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASS: ${{ secrets.ANDROID_KEY_PASS }}
+
+      - name: 安装 HBuilderX CLI
+        if: steps.creds.outputs.missing == '0'
+        run: |
+          set -e
+          cd /opt
+          # 固定版本，避免上游变更导致构建漂移；升级时同步改这里
+          curl -fL -o hx.tar.gz "https://download1.dcloud.net.cn/download/HBuilderX.4.45.2025010702.linux.full.tar.gz"
+          tar xf hx.tar.gz
+          sudo ln -sf /opt/HBuilderX/cli /usr/local/bin/hbuilderx-cli
+          hbuilderx-cli --version || true
+
+      - name: 准备签名文件
+        if: steps.creds.outputs.missing == '0'
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/release.keystore
+
+      - name: 云打包（Android APK）
+        if: steps.creds.outputs.missing == '0'
+        run: |
+          APPID=$(node -e "console.log(require('./src/manifest.json').appid)")
+          if [ "$APPID" = "__UNI_APPID__" ]; then
+            echo "::error::src/manifest.json 的 appid 仍是占位符，请先在 DCloud 开发者中心申请 uni-app x 应用 appid"
+            exit 1
+          fi
+          cat > /tmp/pack.json <<EOF
+          {
+            "project": "$GITHUB_WORKSPACE",
+            "platform": "android",
+            "appid": "$APPID",
+            "android": {
+              "packagename": "com.jiayouexp.hha",
+              "keystore": "/tmp/release.keystore",
+              "storepass": "${{ secrets.ANDROID_KEYSTORE_PASS }}",
+              "aliasname": "${{ secrets.ANDROID_KEY_ALIAS }}",
+              "keypass": "${{ secrets.ANDROID_KEY_PASS }}",
+              "version": { "name": "0.1.0", "code": "100" }
+            }
+          }
+          EOF
+          hbuilderx-cli user login --username "${{ secrets.DCLOUD_USER }}" --password "${{ secrets.DCLOUD_PASS }}"
+          hbuilderx-cli pack --config /tmp/pack.json
+          ls -la unpackage/release/apk/ || true
+
+      - uses: actions/upload-artifact@v4
+        if: steps.creds.outputs.missing == '0'
+        with:
+          name: app-android-apk
+          path: unpackage/release/apk/*.apk
+          if-no-files-found: warn
+
+  pack-ios:
+    if: ${{ github.event_name == 'push' || inputs.platform == 'ios' || inputs.platform == 'both' }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: 检查凭据
+        id: creds
+        run: |
+          missing=0
+          for k in DCLOUD_USER DCLOUD_PASS IOS_CERT_BASE64 IOS_CERT_PASS IOS_PROVISION_BASE64; do
+            if [ -z "${!k}" ]; then echo "缺少 secret: $k"; missing=1; fi
+          done
+          echo "missing=$missing" >> $GITHUB_OUTPUT
+        env:
+          DCLOUD_USER: ${{ secrets.DCLOUD_USER }}
+          DCLOUD_PASS: ${{ secrets.DCLOUD_PASS }}
+          IOS_CERT_BASE64: ${{ secrets.IOS_CERT_BASE64 }}
+          IOS_CERT_PASS: ${{ secrets.IOS_CERT_PASS }}
+          IOS_PROVISION_BASE64: ${{ secrets.IOS_PROVISION_BASE64 }}
+
+      - name: 安装 HBuilderX CLI
+        if: steps.creds.outputs.missing == '0'
+        run: |
+          set -e
+          curl -fL -o hx.zip "https://download1.dcloud.net.cn/download/HBuilderX.4.45.2025010702.macos.full.zip"
+          unzip -q hx.zip -d /Applications
+          sudo ln -sf /Applications/HBuilderX.app/Contents/MacOS/cli /usr/local/bin/hbuilderx-cli
+
+      - name: 导入证书与描述文件
+        if: steps.creds.outputs.missing == '0'
+        run: |
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          echo "${{ secrets.IOS_CERT_BASE64 }}" | base64 -d > /tmp/dev.p12
+          echo "${{ secrets.IOS_PROVISION_BASE64 }}" | base64 -d > ~/Library/MobileDevice/Provisioning\ Profiles/hha.mobileprovision
+          security create-keychain -p ci build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p ci build.keychain
+          security import /tmp/dev.p12 -k build.keychain -P "${{ secrets.IOS_CERT_PASS }}" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k ci build.keychain
+
+      - name: 云打包（iOS IPA）
+        if: steps.creds.outputs.missing == '0'
+        run: |
+          APPID=$(node -e "console.log(require('./src/manifest.json').appid)")
+          if [ "$APPID" = "__UNI_APPID__" ]; then
+            echo "::error::src/manifest.json 的 appid 仍是占位符"; exit 1
+          fi
+          cat > /tmp/pack-ios.json <<EOF
+          { "project": "$GITHUB_WORKSPACE", "platform": "ios", "appid": "$APPID",
+            "ios": { "bundleid": "com.jiayouexp.hha", "profile": "hha.mobileprovision",
+                     "version": { "name": "0.1.0", "code": "100" } } }
+          EOF
+          hbuilderx-cli user login --username "${{ secrets.DCLOUD_USER }}" --password "${{ secrets.DCLOUD_PASS }}"
+          hbuilderx-cli pack --config /tmp/pack-ios.json
+          ls -la unpackage/release/ipa/ || true
+
+      - uses: actions/upload-artifact@v4
+        if: steps.creds.outputs.missing == '0'
+        with:
+          name: app-ios-ipa
+          path: unpackage/release/ipa/*.ipa
+          if-no-files-found: warn

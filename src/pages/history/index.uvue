@@ -1,0 +1,110 @@
+<template>
+  <view class="page">
+    <view class="tabs">
+      <text v-for="(t, i) in tabs" :key="i" class="tab" :class="{ on: i == idx }" @click="idx = i">{{ t }}</text>
+    </view>
+
+    <view class="card">
+      <view class="row"><text class="cardTitle">{{ rangeText }}</text><text class="sub">{{ list.length }} 条</text></view>
+      <BarChart :points="bars" />
+    </view>
+
+    <view class="card">
+      <view class="item" v-for="(r, i) in list" :key="i">
+        <text class="t">{{ r.time }}</text>
+        <text class="v" :style="{ color: r.color }">{{ r.val }}</text>
+        <text class="tag">{{ r.label }}</text>
+        <text class="src" v-if="r.local">本地</text>
+      </view>
+      <text class="empty" v-if="list.length == 0 && !loading">{{ loading ? '加载中…' : '暂无数据' }}</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref, computed, watch, onMounted } from 'vue'
+import BarChart from '@/components/BarChart.uvue'
+import { apiSeries } from '@/api/index.uts'
+import { fmtMmol, glucoseColor, glucoseLabel, fmtTime } from '@/theme.uts'
+import { getCurrentProbeId, cachedReadings } from '@/core/store.uts'
+
+type Row = { time: string, val: string, label: string, color: string, local: boolean }
+
+const tabs = ['24 小时', '7 天', '30 天']
+const idx = ref(0)
+const list = ref<Array<Row>>([])
+const bars = ref<Array<number>>([])
+const loading = ref(false)
+const rangeText = computed<string>(() => tabs[idx.value] + '趋势')
+
+function load() {
+  loading.value = true
+  const days = idx.value == 0 ? 1 : (idx.value == 1 ? 7 : 30)
+  const now = Math.floor(Date.now() / 1000)
+  const from = now - days * 86400
+  const probeId = getCurrentProbeId()
+  if (probeId <= 0) {
+    renderLocal()
+    return
+  }
+  apiSeries(probeId, from, now).then((r) => {
+    loading.value = false
+    if (r.code != 0 || r.data == null) { renderLocal(); return }
+    const d = r.data as UTSJSONObject
+    const pts = d['points'] as Array<UTSJSONObject> | null
+    const rows: Array<Row> = []
+    const bs: Array<number> = []
+    if (pts != null) {
+      pts.forEach((p) => {
+        const cal = (p['cal_x10'] as number | null) ?? 0
+        const ts = (p['ts'] as number | null) ?? 0
+        const mmol = cal / 10
+        rows.push({
+          time: days == 1 ? fmtTime(ts) : (new Date(ts * 1000).getMonth() + 1) + '/' + new Date(ts * 1000).getDate() + ' ' + fmtTime(ts),
+          val: fmtMmol(cal), label: glucoseLabel(mmol), color: glucoseColor(mmol), local: false
+        } as Row)
+        bs.push(mmol)
+      })
+    }
+    rows.reverse()
+    list.value = rows
+    bars.value = bs
+  })
+}
+
+/** 平台不可达时用本地缓存兜底（离线可用） */
+function renderLocal() {
+  loading.value = false
+  const rows: Array<Row> = []
+  const bs: Array<number> = []
+  const cached = cachedReadings()
+  cached.forEach((c) => {
+    const mmol = c.cal / 10
+    rows.push({ time: fmtTime(c.ts), val: fmtMmol(c.cal), label: glucoseLabel(mmol), color: glucoseColor(mmol), local: true } as Row)
+    bs.push(mmol)
+  })
+  rows.reverse()
+  list.value = rows
+  bars.value = bs
+}
+
+watch(idx, (_n, _o) => load())
+onMounted(() => load())
+</script>
+
+<style>
+.page { flex: 1; background-color: #f6f8fb; padding: 24rpx; }
+.tabs { flex-direction: row; background-color: #ffffff; border-radius: 16rpx; padding: 8rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.tab { flex: 1; text-align: center; font-size: 26rpx; color: #5a6b7b; padding: 14rpx 0; border-radius: 12rpx; }
+.tab.on { background-color: #e6f6f5; color: #0b7f7b; font-weight: bold; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 28rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.row { flex-direction: row; justify-content: space-between; align-items: center; }
+.cardTitle { font-size: 30rpx; font-weight: bold; color: #1f2d3d; }
+.sub { font-size: 24rpx; color: #8c9aab; }
+.item { flex-direction: row; align-items: center; padding: 20rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.t { width: 200rpx; font-size: 24rpx; color: #8c9aab; }
+.v { flex: 1; font-size: 32rpx; font-weight: bold; }
+.tag { font-size: 24rpx; color: #5a6b7b; }
+.src { font-size: 20rpx; color: #0e9f9a; margin-left: 12rpx; }
+.empty { font-size: 26rpx; color: #8c9aab; text-align: center; padding: 40rpx 0; }
+</style>

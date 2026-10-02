@@ -1,0 +1,156 @@
+/**
+ * BLE 适配层：连接发射器 → 实时读数 / 读 flash 历史
+ *
+ * 当前实现：连接与通知链路是真调用（uni-app x BLE API），
+ * 但**帧解析与 flash 读取命令依赖未提供的协议**（见 protocol.uts），
+ * 在 PROTOCOL_READY=false 时走「模拟帧」路径，便于先把 UI/本地换算跑通、真机联调不缺位。
+ */
+import { addPending, appendCached, getCurrentProbeId } from '@/core/store.uts'
+import { toCalibrated, loadCurve } from '@/core/cal-curve.uts'
+import type { CalCurve } from '@/core/cal-curve.uts'
+import {
+  DEV_NAME_PREFIX, SERVICE_UUID, CHAR_NOTIFY_UUID, CHAR_WRITE_UUID,
+  CMD_READ_HISTORY, CMD_LIVE, PROTOCOL_READY
+} from './protocol.uts'
+
+export type RawReading = { seq: number, ts: number, raw_x10: number, temp_x10: number }
+export type LiveValue = { raw: number, cal: number, ts: number, local: boolean }
+
+let deviceId: string = ''
+let curve: CalCurve | null = null
+let liveCb: ((v: LiveValue) => void) | null = null
+
+/** 打开蓝牙适配器 */
+export function openAdapter(): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    uni.openBluetoothAdapter({
+      success: (_r) => resolve(true),
+      fail: (_e) => resolve(false)
+    } as OpenBluetoothAdapterOptions)
+  })
+}
+
+/** 扫描发射器（按名称前缀匹配；协议确认后改为按 Service UUID 过滤更稳） */
+export function scan(timeoutMs: number = 8000): Promise<Array<string>> {
+  return new Promise<Array<string>>((resolve) => {
+    const found: Array<string> = []
+    uni.onBluetoothDeviceFound((res) => {
+      res.devices.forEach((d) => {
+        const name = d.name ?? (d.localName ?? '')
+        if (name.indexOf(DEV_NAME_PREFIX) == 0 && found.indexOf(d.deviceId) < 0) {
+          found.push(d.deviceId)
+        }
+      })
+    } as OnBluetoothDeviceFoundCallback)
+    uni.startBluetoothDevicesDiscovery({
+      allowDuplicatesKey: false,
+      success: (_r) => {
+        setTimeout(() => {
+          uni.stopBluetoothDevicesDiscovery({} as StopBluetoothDevicesDiscoveryOptions)
+          resolve(found)
+        }, timeoutMs)
+      },
+      fail: (_e) => resolve(found)
+    } as StartBluetoothDevicesDiscoveryOptions)
+  })
+}
+
+/** 连接设备并订阅通知 */
+export function connect(id: string): Promise<boolean> {
+  deviceId = id
+  return new Promise<boolean>((resolve) => {
+    uni.createBLEConnection({
+      deviceId: id,
+      timeout: 10000,
+      success: (_r) => {
+        uni.notifyBLECharacteristicValueChange({
+          deviceId: id,
+          serviceId: SERVICE_UUID,
+          characteristicId: CHAR_NOTIFY_UUID,
+          state: true,
+          success: (_n) => resolve(true),
+          fail: (_e) => resolve(false)
+        } as NotifyBLECharacteristicValueChangeOptions)
+      },
+      fail: (_e) => resolve(false)
+    } as CreateBLEConnectionOptions)
+  })
+}
+
+/** 订阅实时值：BLE 帧 → 本地插值 → 矫正值（0 次网络） */
+export function subscribeLive(cb: (v: LiveValue) => void) {
+  liveCb = cb
+  uni.onBLECharacteristicValueChange((res) => {
+    const reading = parseFrame(res.value)
+    if (reading == null) return
+    if (curve == null) {
+      const pid = getCurrentProbeId()
+      if (pid > 0) {
+        loadCurve(pid, false).then((c) => { curve = c })
+      }
+    }
+    const cal = toCalibrated(curve, reading.raw_x10)
+    const v: LiveValue = {
+      raw: reading.raw_x10,
+      cal: cal,
+      ts: reading.ts,
+      local: true
+    } as LiveValue
+    addPending(reading)                                   // 攒批，等 WiFi/充电批量回传
+    appendCached({ ts: v.ts, raw: v.raw, cal: v.cal, local: true })
+    if (liveCb != null) liveCb(v)
+  } as OnBLECharacteristicValueChangeCallback)
+  // 让设备开始推实时值（协议待确认，先用占位命令）
+  writeCommand([CMD_LIVE])
+}
+
+/** 读 flash 历史（APP 首次接入时补齐断网期间的数据） */
+export async function readFlashHistory(): Promise<Array<RawReading>> {
+  if (!PROTOCOL_READY) {
+    // 协议未就绪：返回空数组并在 UI 提示（不做假数据，避免污染平台）
+    console.warn('[ble] flash 读取需要发射器 BLE 协议（见 docs/ble-protocol.md），当前未实现')
+    return []
+  }
+  const out: Array<RawReading> = []
+  writeCommand([CMD_READ_HISTORY])
+  // 协议确认后：解析通知帧 → 分页游标续读，直到设备返回结束标记
+  return out
+}
+
+function writeCommand(cmd: Array<number>): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (deviceId == '') { resolve(false); return }
+    const buf = new ArrayBuffer(cmd.length)
+    const view = new Uint8Array(buf)
+    for (let i = 0; i < cmd.length; i++) view[i] = cmd[i]
+    uni.writeBLECharacteristicValue({
+      deviceId: deviceId,
+      serviceId: SERVICE_UUID,
+      characteristicId: CHAR_WRITE_UUID,
+      value: buf,
+      success: (_r) => resolve(true),
+      fail: (_e) => resolve(false)
+    } as WriteBLECharacteristicValueOptions)
+  })
+}
+
+/**
+ * 帧解析：协议确认后按真实格式实现。
+ * 返回 { seq, ts, raw_x10, temp_x10 }，与平台 readings 表同语义（raw_x10 为设备原始值）。
+ */
+function parseFrame(value: ArrayBuffer): RawReading | null {
+  if (!PROTOCOL_READY) return null
+  // TODO(协议): 按 device-protocol 定义的帧结构解析，例如：
+  //   const v = new DataView(value)
+  //   return { seq: v.getUint32(0, true), ts: v.getUint32(4, true),
+  //            raw_x10: v.getUint16(8, true), temp_x10: v.getInt16(10, true) }
+  return null
+}
+
+export function disconnect() {
+  if (deviceId != '') {
+    uni.closeBLEConnection({ deviceId: deviceId } as CloseBLEConnectionOptions)
+    deviceId = ''
+  }
+  liveCb = null
+}

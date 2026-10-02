@@ -1,0 +1,71 @@
+<template>
+  <view class="wrap">
+    <view class="brand">
+      <text class="logo">家庭健康助理</text>
+      <text class="slogan">血糖 · 家庭 · 一目了然</text>
+    </view>
+
+    <view class="card">
+      <input class="inp" v-model="email" placeholder="邮箱" :disabled="loading" />
+      <input class="inp" v-model="password" placeholder="密码" password :disabled="loading" />
+      <button class="btn" :disabled="loading" @click="doLogin">{{ loading ? '登录中…' : '登 录' }}</button>
+      <text class="err" v-if="errMsg != ''">{{ errMsg }}</text>
+      <text class="tip">使用平台（家庭健康助理平台）同一账号登录</text>
+    </view>
+
+    <text class="foot">v{{ version }} · 与平台同源数据</text>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref } from 'vue'
+import { apiLogin, apiProfile } from '@/api/index.uts'
+import { setToken, setUser } from '@/core/store.uts'
+
+const email = ref('')
+const password = ref('')
+const loading = ref(false)
+const errMsg = ref('')
+const version = ref('0.1.0')
+
+function doLogin() {
+  if (email.value == '' || password.value == '') {
+    errMsg.value = '请填写邮箱与密码'
+    return
+  }
+  loading.value = true
+  errMsg.value = ''
+  apiLogin(email.value, password.value).then((r) => {
+    if (r.code != 0 || r.data == null) {
+      loading.value = false
+      errMsg.value = r.message == '' ? '登录失败' : r.message
+      return
+    }
+    const d = r.data as UTSJSONObject
+    setToken((d['token'] as string | null) ?? '')
+    // 拉一次 profile（平台返回聚合包 {user, roles, permissions, menus}）
+    apiProfile().then((p) => {
+      loading.value = false
+      if (p.code == 0 && p.data != null) {
+        const pd = p.data as UTSJSONObject
+        const u = pd['user'] as UTSJSONObject | null
+        if (u != null) setUser(u)
+      }
+      uni.switchTab({ url: '/pages/home/index' } as SwitchTabOptions)
+    })
+  })
+}
+</script>
+
+<style>
+.wrap { flex: 1; background-color: #f6f8fb; padding: 60rpx 40rpx; justify-content: center; }
+.brand { align-items: center; margin-bottom: 60rpx; }
+.logo { font-size: 48rpx; color: #0e9f9a; font-weight: bold; }
+.slogan { font-size: 26rpx; color: #8c9aab; margin-top: 12rpx; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 40rpx 32rpx; border: 1rpx solid #e6ebf1; }
+.inp { height: 88rpx; border: 1rpx solid #e6ebf1; border-radius: 16rpx; padding: 0 24rpx; margin-bottom: 24rpx; font-size: 28rpx; background-color: #fbfcfe; }
+.btn { height: 88rpx; line-height: 88rpx; background-color: #0e9f9a; color: #ffffff; border-radius: 16rpx; font-size: 30rpx; }
+.err { color: #ef4444; font-size: 26rpx; margin-top: 20rpx; text-align: center; }
+.tip { color: #8c9aab; font-size: 24rpx; margin-top: 24rpx; text-align: center; }
+.foot { color: #8c9aab; font-size: 22rpx; text-align: center; margin-top: 60rpx; }
+</style>

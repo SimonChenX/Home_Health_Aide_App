@@ -1,0 +1,27 @@
+<script lang="uts">
+import { checkLogin } from '@/core/store.uts'
+import { syncOnLaunch, stopSyncLoop } from '@/core/sync.uts'
+
+export default {
+  onLaunch() {
+    // 启动：校验登录态 → 后台做一次「曲线刷新 + 待上报数据回传」（省电：只在启动/回前台时做）
+    checkLogin()
+    syncOnLaunch()
+  },
+  onShow() {
+    syncOnLaunch()
+  },
+  onHide() {
+    stopSyncLoop()
+  }
+}
+</script>
+
+<style>
+/* 全局基础样式：与平台一致的底色与字体 */
+page {
+  background-color: #f6f8fb;
+  color: #1f2d3d;
+  font-size: 28rpx;
+}
+</style>

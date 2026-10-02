@@ -1,0 +1,132 @@
+<template>
+  <view class="page">
+    <view class="card">
+      <text class="cardTitle">识别入口</text>
+      <view class="btnRow">
+        <button class="btn small" @click="pick('record')">病历识别</button>
+        <button class="btn small" @click="pick('report')">报告识别</button>
+      </view>
+      <text class="hint">与平台同一识别通道（线上模型）；提交后异步识别，可在「识别记录」查看结果</text>
+      <text class="busy" v-if="busy != ''">{{ busy }}</text>
+    </view>
+
+    <view class="card">
+      <view class="row"><text class="cardTitle">识别记录</text><text class="lk" @click="loadJobs">刷新</text></view>
+      <view class="item" v-for="(j, i) in jobs" :key="i">
+        <text class="t">{{ j.kind }}</text>
+        <text class="s">{{ j.time }}</text>
+        <text class="st" :style="{ color: j.color }">{{ j.status }}</text>
+      </view>
+      <text class="empty" v-if="jobs.length == 0">暂无识别记录</text>
+    </view>
+
+    <view class="card">
+      <view class="row"><text class="cardTitle">医疗记录</text><text class="lk" @click="loadRecords">刷新</text></view>
+      <view class="item" v-for="(r, i) in records" :key="i">
+        <view class="col">
+          <text class="rn">{{ r.title }}</text>
+          <text class="rs">{{ r.sub }}</text>
+        </view>
+      </view>
+      <text class="empty" v-if="records.length == 0">暂无医疗记录</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref, onMounted } from 'vue'
+import { BASE_URL, getToken } from '@/api/client.uts'
+import { get } from '@/api/client.uts'
+
+type Job = { kind: string, time: string, status: string, color: string }
+type Rec = { title: string, sub: string }
+
+const jobs = ref<Array<Job>>([])
+const records = ref<Array<Rec>>([])
+const busy = ref('')
+
+function loadJobs() {
+  get('/medicals/ocr/jobs').then((r) => {
+    if (r.code != 0 || r.data == null) return
+    const d = r.data as UTSJSONObject
+    const list = d['list'] as Array<UTSJSONObject> | null
+    const out: Array<Job> = []
+    if (list != null) {
+      list.forEach((j) => {
+        const st = (j['status'] as string | null) ?? ''
+        out.push({
+          kind: ((j['kind'] as string | null) ?? '') == 'record' ? '病历识别' : '报告识别',
+          time: (j['created_at'] as string | null) ?? '',
+          status: st == 'done' ? '已完成' : (st == 'failed' ? '失败' : '识别中'),
+          color: st == 'done' ? '#10b981' : (st == 'failed' ? '#ef4444' : '#f59e0b')
+        } as Job)
+      })
+    }
+    jobs.value = out
+  })
+}
+
+function loadRecords() {
+  get('/medicals').then((r) => {
+    if (r.code != 0 || r.data == null) return
+    const d = r.data as UTSJSONObject
+    const list = d['list'] as Array<UTSJSONObject> | null
+    const out: Array<Rec> = []
+    if (list != null) {
+      list.forEach((m) => {
+        out.push({
+          title: (m['title'] as string | null) ?? '医疗记录',
+          sub: ((m['hospital'] as string | null) ?? '') + ' · ' + ((m['record_date'] as string | null) ?? '')
+        } as Rec)
+      })
+    }
+    records.value = out
+  })
+}
+
+/** 拍照/选图 → 上传到平台识别接口（与平台网页端同一通道） */
+function pick(kind: string) {
+  uni.chooseImage({
+    count: 1,
+    success: (res) => {
+      const paths = res.tempFilePaths
+      if (paths.length == 0) return
+      busy.value = '上传中…'
+      uni.uploadFile({
+        url: BASE_URL + (kind == 'record' ? '/medicals/ocr/record' : '/medicals/ocr/report'),
+        filePath: paths[0],
+        name: 'file',
+        header: { 'Authorization': 'Bearer ' + getToken() },
+        success: (_up) => {
+          busy.value = '已提交，识别中（约 10~60 秒）'
+          setTimeout(() => { busy.value = ''; loadJobs() }, 8000)
+        },
+        fail: (_e) => { busy.value = '上传失败，请重试' }
+      } as UploadFileOptions)
+    }
+  } as ChooseImageOptions)
+}
+
+onMounted(() => { loadJobs(); loadRecords() })
+</script>
+
+<style>
+.page { flex: 1; background-color: #f6f8fb; padding: 24rpx; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 28rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.row { flex-direction: row; justify-content: space-between; align-items: center; }
+.cardTitle { font-size: 30rpx; font-weight: bold; color: #1f2d3d; }
+.lk { font-size: 24rpx; color: #0e9f9a; }
+.btnRow { flex-direction: row; margin-top: 20rpx; }
+.btn { flex: 1; height: 80rpx; line-height: 80rpx; background-color: #0e9f9a; color: #ffffff; border-radius: 14rpx; font-size: 28rpx; margin-right: 16rpx; }
+.btn.small { font-size: 26rpx; }
+.hint { font-size: 22rpx; color: #8c9aab; margin-top: 16rpx; }
+.busy { font-size: 24rpx; color: #0e9f9a; margin-top: 12rpx; }
+.item { flex-direction: row; justify-content: space-between; align-items: center; padding: 22rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.t { font-size: 28rpx; color: #1f2d3d; width: 200rpx; }
+.s { flex: 1; font-size: 24rpx; color: #8c9aab; }
+.st { font-size: 24rpx; }
+.col { flex: 1; }
+.rn { font-size: 28rpx; color: #1f2d3d; }
+.rs { font-size: 22rpx; color: #8c9aab; margin-top: 6rpx; }
+.empty { font-size: 26rpx; color: #8c9aab; text-align: center; padding: 30rpx 0; }
+</style>

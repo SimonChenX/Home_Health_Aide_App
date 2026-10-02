@@ -1,0 +1,85 @@
+/**
+ * 本地存储：登录态 / 当前探头 / 校准曲线 / 待上报读数队列
+ * 一律走 uni storage（APP 本地），不做定时任务。
+ */
+import type { CalCurve } from './cal-curve.uts'
+
+const K_TOKEN = 'hha_token'
+const K_USER = 'hha_user'
+const K_PROBE = 'hha_probe_id'
+const K_CURVE = 'hha_curve_'      // + probeId
+const K_PENDING = 'hha_pending'   // 待上报读数
+const K_READINGS = 'hha_readings' // 本地已展示读数缓存（最近 N 条）
+
+export type PendingRow = { seq: number, ts: number, raw_x10: number, temp_x10: number }
+export type CachedReading = { ts: number, raw: number, cal: number, local: boolean }
+
+export function getToken(): string {
+  const t = uni.getStorageSync(K_TOKEN)
+  return t == null ? '' : (t as string)
+}
+export function setToken(t: string) { uni.setStorageSync(K_TOKEN, t) }
+export function clearToken() {
+  uni.removeStorageSync(K_TOKEN)
+  uni.removeStorageSync(K_USER)
+}
+export function getUser(): UTSJSONObject | null {
+  const u = uni.getStorageSync(K_USER)
+  return u == null || (u as string) == '' ? null : JSON.parse(u as string) as UTSJSONObject
+}
+export function setUser(u: UTSJSONObject) { uni.setStorageSync(K_USER, JSON.stringify(u)) }
+export function isLogged(): boolean { return getToken() != '' }
+
+export function checkLogin() {
+  if (!isLogged()) {
+    uni.reLaunch({ url: '/pages/login/index' } as NavigateToOptions)
+  }
+}
+
+export function getCurrentProbeId(): number {
+  const v = uni.getStorageSync(K_PROBE)
+  return v == null ? 0 : (v as number)
+}
+export function setCurrentProbeId(id: number) { uni.setStorageSync(K_PROBE, id) }
+
+// ---- 校准曲线缓存 ----
+export function saveCurve(c: CalCurve) {
+  uni.setStorageSync(K_CURVE + c.probeId, JSON.stringify(c))
+}
+export function getCurve(probeId: number): CalCurve | null {
+  const s = uni.getStorageSync(K_CURVE + probeId)
+  if (s == null || (s as string) == '') return null
+  return JSON.parse(s as string) as CalCurve
+}
+
+// ---- 待上报队列（省电核心：攒批 + 只在合适时机上报） ----
+export function pendingRows(): Array<PendingRow> {
+  const s = uni.getStorageSync(K_PENDING)
+  if (s == null || (s as string) == '') return []
+  return JSON.parse(s as string) as Array<PendingRow>
+}
+export function addPending(row: PendingRow) {
+  const list = pendingRows()
+  list.push(row)
+  // 上限保护：最多留 3000 条（约 10 天），超出丢最旧的（已上过报的不会在这里）
+  while (list.length > 3000) list.shift()
+  uni.setStorageSync(K_PENDING, JSON.stringify(list))
+}
+export function clearPending() { uni.removeStorageSync(K_PENDING) }
+export function setPending(list: Array<PendingRow>) { uni.setStorageSync(K_PENDING, JSON.stringify(list)) }
+
+// ---- 本地展示缓存（首页/趋势离线可用） ----
+export function cachedReadings(): Array<CachedReading> {
+  const s = uni.getStorageSync(K_READINGS)
+  if (s == null || (s as string) == '') return []
+  return JSON.parse(s as string) as Array<CachedReading>
+}
+export function appendCached(r: CachedReading) {
+  const list = cachedReadings()
+  list.push(r)
+  while (list.length > 2000) list.shift()
+  uni.setStorageSync(K_READINGS, JSON.stringify(list))
+}
+export function replaceCached(list: Array<CachedReading>) {
+  uni.setStorageSync(K_READINGS, JSON.stringify(list))
+}

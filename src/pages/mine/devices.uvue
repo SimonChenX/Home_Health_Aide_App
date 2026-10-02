@@ -1,0 +1,93 @@
+<template>
+  <view class="page">
+    <view class="card">
+      <view class="row"><text class="cardTitle">探头</text><text class="lk" @click="load">刷新</text></view>
+      <view class="item" v-for="(p, i) in probes" :key="i" @click="pick(p)">
+        <view class="col">
+          <text class="pn">{{ p.sn }}</text>
+          <text class="ps">{{ p.sub }}</text>
+        </view>
+        <text class="st" :style="{ color: p.active ? '#0e9f9a' : '#8c9aab' }">{{ p.active ? '当前' : '选择' }}</text>
+      </view>
+      <text class="empty" v-if="probes.length == 0">暂无探头（请先在平台登记）</text>
+    </view>
+
+    <view class="card">
+      <text class="cardTitle">发射器（BLE）</text>
+      <view class="kv"><text class="k">协议状态</text><text class="v warn">待平台方提供</text></view>
+      <view class="kv"><text class="k">扫描前缀</text><text class="v">{{ prefix }}</text></view>
+      <button class="btn" @click="doScan">扫描发射器</button>
+      <text class="hint">协议补齐后此处可直接读取 flash 历史；详见 docs/ble-protocol.md</text>
+    </view>
+  </view>
+</template>
+
+<script setup lang="uts">
+import { ref, onMounted } from 'vue'
+import { apiProbes } from '@/api/index.uts'
+import { getCurrentProbeId, setCurrentProbeId } from '@/core/store.uts'
+import { loadCurve } from '@/core/cal-curve.uts'
+import { openAdapter, scan } from '@/device/ble.uts'
+import { DEV_NAME_PREFIX } from '@/device/protocol.uts'
+
+type P = { id: number, sn: string, sub: string, active: boolean }
+
+const probes = ref<Array<P>>([])
+const prefix = ref(DEV_NAME_PREFIX)
+
+function load() {
+  apiProbes().then((r) => {
+    if (r.code != 0 || r.data == null) return
+    const d = r.data as UTSJSONObject
+    const list = d['list'] as Array<UTSJSONObject> | null
+    const cur = getCurrentProbeId()
+    const out: Array<P> = []
+    if (list != null) {
+      list.forEach((p) => {
+        const id = (p['id'] as number | null) ?? 0
+        out.push({
+          id: id,
+          sn: (p['sn'] as string | null) ?? '未命名探头',
+          sub: ((p['model'] as string | null) ?? '') + ' · 生产日期 ' + ((p['produced_at'] as string | null) ?? '—'),
+          active: id == cur
+        } as P)
+      })
+    }
+    probes.value = out
+  })
+}
+
+/** 切换当前探头：曲线随之重拉（不同探头灵敏度/算法不同） */
+function pick(p: P) {
+  setCurrentProbeId(p.id)
+  loadCurve(p.id, true).then((_c) => { load() })
+}
+function doScan() {
+  openAdapter().then((ok) => {
+    if (!ok) { uni.showToast({ title: '蓝牙未开启', icon: 'none' } as ShowToastOptions); return }
+    scan(8000).then((ids) => {
+      uni.showToast({ title: ids.length > 0 ? '发现 ' + ids.length + ' 台发射器' : '未发现发射器', icon: 'none' } as ShowToastOptions)
+    })
+  })
+}
+onMounted(() => load())
+</script>
+
+<style>
+.page { flex: 1; background-color: #f6f8fb; padding: 24rpx; }
+.card { background-color: #ffffff; border-radius: 24rpx; padding: 28rpx 32rpx; margin-bottom: 24rpx; border: 1rpx solid #e6ebf1; }
+.row { flex-direction: row; justify-content: space-between; align-items: center; }
+.cardTitle { font-size: 30rpx; font-weight: bold; color: #1f2d3d; }
+.lk { font-size: 24rpx; color: #0e9f9a; }
+.item { flex-direction: row; justify-content: space-between; align-items: center; padding: 24rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.pn { font-size: 28rpx; color: #1f2d3d; }
+.ps { font-size: 22rpx; color: #8c9aab; margin-top: 6rpx; }
+.st { font-size: 24rpx; }
+.kv { flex-direction: row; justify-content: space-between; padding: 18rpx 0; border-bottom: 1rpx solid #f0f4f8; }
+.k { font-size: 26rpx; color: #5a6b7b; }
+.v { font-size: 26rpx; color: #1f2d3d; }
+.v.warn { color: #f59e0b; }
+.btn { height: 80rpx; line-height: 80rpx; background-color: #0e9f9a; color: #ffffff; border-radius: 14rpx; font-size: 28rpx; margin-top: 24rpx; }
+.hint { font-size: 22rpx; color: #8c9aab; margin-top: 16rpx; }
+.empty { font-size: 26rpx; color: #8c9aab; text-align: center; padding: 30rpx 0; }
+</style>
